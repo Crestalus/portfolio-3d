@@ -71,22 +71,32 @@ ACS(I) O-Levels → Victoria Junior College A-Levels), honors (MOE ASEAN Scholar
   - Modal renderers: quest log, achievements list, help/controls, "full clear"
     end screen with `mailto:` and LinkedIn links.
 
-## What's missing (never written — do not assume it exists)
+## What was completed (chunks 4–5 — now written)
 
 The plan called for 5 chunks: (1) HTML structure/CSS, (2) body markup, (3) JS data
-layer, (4) Three.js scene setup, (5) input handling + animation loop. Only 1–3 were
-written before the session ended. **Chunks 4 and 5 do not exist anywhere in the
-export.** Concretely, still to build:
-- Actual Three.js scene: renderer/camera setup, the floating islands themselves
-  (geometry/materials), lighting, starfield/nebula background, atmospheric effects.
-- Camera controls (drag-to-orbit, scroll/pinch-to-zoom).
-- Click/raycast handling to select an island and open its zone panel.
-- Collectible orb objects + click-to-collect logic feeding into XP/achievements.
-- The render/animation loop tying it all together.
-- Closing the outer `(function(){ ... })();` IIFE in `js/game.js` (currently
-  unclosed — the file will throw a syntax error until the remaining code is added
-  and the IIFE is closed).
+layer, (4) Three.js scene setup, (5) input handling + animation loop. Chunks 1–3 came
+from the original export; **chunks 4 and 5 have now been written**, appended to the
+bottom of `js/game.js` (before the IIFE close) and hooked into the existing data/
+state/XP/modal layer. Concretely added:
+- Three.js scene (r128, loaded via CDN in `index.html`): alpha renderer mounted in
+  `#world`, perspective camera, ambient + directional + point lighting, a 2.6k-point
+  starfield, additive nebula glow sprites, and a floating archipelago — one island
+  per zone (Nexus central, the six `ORDER` zones on a ring), each with a platform,
+  glowing rim, downward rock spike, a spinning zone-colored crystal beacon, accent
+  light, and an HTML `.isl-label`.
+- Custom spherical orbit camera (no OrbitControls dependency): pointer drag-to-orbit
+  with eased targets and idle auto-rotate, wheel + two-finger pinch zoom, all clamped.
+- Raycast interaction: click an island → `openZone(id)`; click a glowing orb →
+  collect (8 total) feeding XP and the `orbs` / `full` achievements; desktop hover
+  highlights the hovered island's label.
+- `openZone(id)` zone-panel renderer (single source of truth for island/dock/label
+  clicks), the dynamically built zone dock, the sector-map radar, the render/animation
+  loop with HTML-label projection, the title→PRESS START boot sequence, HUD button
+  wiring (quests/achievements/help/sound), ESC/close handling, the playtime ticker,
+  the one-shot hint, and the Konami-code easter egg.
+- The outer `(function(){ … })();` IIFE is now **closed**.
 
-`index.html` includes `js/game.js` via `<script src="js/game.js"></script>` and will
-not render correctly as-is — opening it in a browser will hit the JS syntax error
-described above. Treat this as a paused work-in-progress, not a working demo.
+`index.html` includes `js/game.js` via `<script src="js/game.js"></script>`. The file
+now passes `node --check`, and a stubbed harness exercises init → start → openZone →
+HUD buttons without runtime errors. Open `index.html` in a modern (WebGL) browser to
+play; without WebGL it shows the `#no3d` fallback.

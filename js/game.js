@@ -359,3 +359,461 @@ function openComplete(){
     +'<div class="contact" style="width:100%"><a class="cbtn" href="mailto:lvietquang11@gmail.com">✉ &nbsp;EMAIL QUANG</a><a class="cbtn alt" href="https://www.linkedin.com/in/quang-le-54239b1bb" target="_blank" rel="noopener">LINKEDIN ↗</a></div></div>';
   openModal('FULL CLEAR', h, true);
 }
+
+/* ==================== CHUNK 4 — THREE.JS WORLD ==================== */
+var THREE = window.THREE;
+var renderer, scene, camera, raycaster, ndc;
+var islands = {};        // zone id -> { group, label, dockBtn, baseY, phase, spin, crystal, light }
+var islandPicks = [];    // meshes/groups carrying userData.zone (raycast targets)
+var orbs = [];           // { mesh, glow, base, alive, phase }
+var stars = null;
+var center = null;       // THREE.Vector3 archipelago center
+var clock = 0;
+
+/* spherical orbit camera state */
+var cam = { theta: 0.7, phi: 0.95, radius: 18, tTheta: 0.7, tPhi: 0.95, tRadius: 18 };
+var PHI_MIN = 0.32, PHI_MAX = 1.42, R_MIN = 8, R_MAX = 30;
+
+function webglOK(){
+  if(!THREE) return false;
+  try {
+    var c = document.createElement('canvas');
+    return !!(window.WebGLRenderingContext && (c.getContext('webgl') || c.getContext('experimental-webgl')));
+  } catch(e){ return false; }
+}
+
+/* soft radial glow texture (no external assets) */
+function glowTexture(){
+  var s = 128, cv = document.createElement('canvas'); cv.width = cv.height = s;
+  var g = cv.getContext('2d');
+  var rg = g.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  rg.addColorStop(0, 'rgba(255,255,255,1)');
+  rg.addColorStop(0.25, 'rgba(255,255,255,0.55)');
+  rg.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = rg; g.fillRect(0, 0, s, s);
+  var t = new THREE.Texture(cv); t.needsUpdate = true; return t;
+}
+var GLOW = null;
+
+function makeIsland(id, pos, scale){
+  var z = ZONES[id], col = new THREE.Color(z.color), grp = new THREE.Group();
+  scale = scale || 1;
+
+  // floating top platform
+  var topMat = new THREE.MeshStandardMaterial({ color: 0x141a30, roughness: 0.85, metalness: 0.1, emissive: col, emissiveIntensity: 0.18 });
+  var top = new THREE.Mesh(new THREE.CylinderGeometry(2.2*scale, 1.95*scale, 0.55*scale, 7), topMat);
+  top.userData.zone = id; grp.add(top);
+
+  // glowing rim disc on the surface
+  var rimMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+  var rim = new THREE.Mesh(new THREE.RingGeometry(1.7*scale, 2.25*scale, 32), rimMat);
+  rim.rotation.x = -Math.PI/2; rim.position.y = 0.31*scale; rim.userData.zone = id; grp.add(rim);
+
+  // downward rock spike
+  var rockMat = new THREE.MeshStandardMaterial({ color: 0x0e1224, roughness: 1, metalness: 0, flatShading: true });
+  var spike = new THREE.Mesh(new THREE.ConeGeometry(1.9*scale, 3.6*scale, 7), rockMat);
+  spike.position.y = -2.05*scale; spike.rotation.x = Math.PI; spike.userData.zone = id; grp.add(spike);
+
+  // hovering crystal beacon (zone-colored, spins)
+  var cryMat = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.9, roughness: 0.25, metalness: 0.3 });
+  var crystal = new THREE.Mesh(new THREE.IcosahedronGeometry(0.6*scale, 0), cryMat);
+  crystal.position.y = 1.5*scale; crystal.userData.zone = id; grp.add(crystal);
+
+  // beacon glow sprite
+  if(GLOW){
+    var sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color: col, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+    sp.scale.set(3.4*scale, 3.4*scale, 1); sp.position.y = 1.5*scale; grp.add(sp);
+  }
+
+  // accent point light
+  var pl = new THREE.PointLight(col, 0.9, 12*scale, 2);
+  pl.position.y = 1.2*scale; grp.add(pl);
+
+  grp.position.copy(pos);
+  scene.add(grp);
+
+  // HTML label
+  var lab = document.createElement('div');
+  lab.className = 'isl-label'; lab.style.setProperty('--zc', z.color);
+  lab.innerHTML = '<span class="lname">'+z.dock+'</span><span class="qmark">!</span>';
+  lab.setAttribute('data-id', id);
+  lab.addEventListener('click', function(){ if(S.started) openZone(id); });
+  $('#labels').appendChild(lab);
+
+  islands[id] = { group: grp, label: lab, crystal: crystal, baseY: pos.y, phase: Math.random()*TAU, spin: 0.15 + Math.random()*0.15 };
+  islandPicks.push(grp);
+}
+
+function makeOrb(pos, idx){
+  var col = new THREE.Color(0x9fe8ff);
+  var mat = new THREE.MeshBasicMaterial({ color: 0xd6f4ff });
+  var mesh = new THREE.Mesh(new THREE.SphereGeometry(0.34, 16, 16), mat);
+  mesh.position.copy(pos); mesh.userData = { orb: true, idx: idx };
+  scene.add(mesh);
+  var glow = null;
+  if(GLOW){
+    glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color: col, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
+    glow.scale.set(2.0, 2.0, 1); glow.position.copy(pos); scene.add(glow);
+  }
+  orbs.push({ mesh: mesh, glow: glow, base: pos.clone(), alive: true, phase: Math.random()*TAU });
+}
+
+function buildWorld(){
+  GLOW = glowTexture();
+  scene = new THREE.Scene();
+  center = new THREE.Vector3(0, 0.5, 0);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x000000, 0);
+  $('#world').appendChild(renderer.domElement);
+
+  camera = new THREE.PerspectiveCamera(52, window.innerWidth/window.innerHeight, 0.1, 400);
+  raycaster = new THREE.Raycaster();
+  ndc = new THREE.Vector2();
+
+  // lighting
+  scene.add(new THREE.AmbientLight(0x3a4268, 0.9));
+  var key = new THREE.DirectionalLight(0xbfd0ff, 0.7); key.position.set(6, 12, 8); scene.add(key);
+  var fill = new THREE.PointLight(0x6e8bff, 0.5, 80); fill.position.set(-10, 6, -8); scene.add(fill);
+
+  // starfield
+  var SN = 2600, sg = new THREE.BufferGeometry(), sp = new Float32Array(SN*3);
+  for(var i=0;i<SN;i++){
+    var r = 90 + Math.random()*160, a = Math.random()*TAU, b = Math.acos(2*Math.random()-1);
+    sp[i*3] = r*Math.sin(b)*Math.cos(a); sp[i*3+1] = r*Math.cos(b); sp[i*3+2] = r*Math.sin(b)*Math.sin(a);
+  }
+  sg.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+  stars = new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xcdd8ff, size: 0.7, sizeAttenuation: true, transparent: true, opacity: 0.9 }));
+  scene.add(stars);
+
+  // nebula glow sprites
+  if(GLOW){
+    var neb = [[0x4658c8, -38, 6, -60, 70], [0x7c4bd6, 44, -8, -54, 64], [0xc04b78, 8, 20, -78, 80]];
+    neb.forEach(function(n){
+      var s = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color: n[0], transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false }));
+      s.position.set(n[1], n[2], n[3]); s.scale.set(n[4], n[4], 1); scene.add(s);
+    });
+  }
+
+  // islands: nexus at center, six zones on a ring
+  makeIsland('nexus', new THREE.Vector3(0, 0.6, 0), 1.25);
+  var R = 9.2;
+  ORDER.forEach(function(id, i){
+    var a = (i/ORDER.length)*TAU - Math.PI/2;
+    var p = new THREE.Vector3(Math.cos(a)*R, -0.4 + Math.sin(i*1.7)*0.8, Math.sin(a)*R);
+    makeIsland(id, p, 1);
+  });
+
+  // 8 orbs scattered between/around islands
+  for(var o=0;o<TOTAL_ORBS;o++){
+    var ang = (o/TOTAL_ORBS)*TAU + 0.4, rr = 4.5 + (o%3)*2.4;
+    makeOrb(new THREE.Vector3(Math.cos(ang)*rr, 1.4 + Math.sin(o*2.1)*1.6, Math.sin(ang)*rr), o);
+  }
+
+  window.addEventListener('resize', onResize);
+  onResize();
+}
+
+function onResize(){
+  if(!renderer) return;
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+/* ==================== CHUNK 5 — INPUT + RAYCAST + LOOP ==================== */
+function zoneFromObject(obj){
+  while(obj){ if(obj.userData && obj.userData.zone) return obj.userData.zone; obj = obj.parent; }
+  return null;
+}
+function setNDC(x, y){
+  ndc.x = (x/window.innerWidth)*2 - 1;
+  ndc.y = -(y/window.innerHeight)*2 + 1;
+}
+function pickAt(x, y){
+  setNDC(x, y); raycaster.setFromCamera(ndc, camera);
+  var live = orbs.filter(function(o){ return o.alive; }).map(function(o){ return o.mesh; });
+  var hitO = raycaster.intersectObjects(live, false);
+  if(hitO.length) return { type: 'orb', idx: hitO[0].object.userData.idx };
+  var hitI = raycaster.intersectObjects(islandPicks, true);
+  if(hitI.length){ var z = zoneFromObject(hitI[0].object); if(z) return { type: 'zone', id: z }; }
+  return null;
+}
+function collectOrb(idx){
+  var o = orbs[idx]; if(!o || !o.alive) return;
+  o.alive = false; o.mesh.visible = false; if(o.glow) o.glow.visible = false;
+  S.orbs++; sfx.collect();
+  addXP(15, 'ENERGY ORB');
+  if(S.orbs === TOTAL_ORBS) unlock('orbs');
+  checkFull(); updateHUD();
+  drawRadar();
+}
+
+/* pointer / drag / zoom */
+var ptr = { down: false, x: 0, y: 0, moved: 0, pid: null };
+var pinch = { active: false, dist: 0 };
+function bindInput(){
+  var world = $('#world');
+  world.addEventListener('pointerdown', function(e){
+    if(!S.started) return;
+    ptr.down = true; ptr.x = e.clientX; ptr.y = e.clientY; ptr.moved = 0; ptr.pid = e.pointerId;
+    world.classList.add('dragging'); S.idle = 0;
+    if(world.setPointerCapture){ try{ world.setPointerCapture(e.pointerId); }catch(_){} }
+  });
+  world.addEventListener('pointermove', function(e){
+    if(!ptr.down) return;
+    var dx = e.clientX - ptr.x, dy = e.clientY - ptr.y;
+    ptr.x = e.clientX; ptr.y = e.clientY; ptr.moved += Math.abs(dx) + Math.abs(dy); S.idle = 0;
+    cam.tTheta -= dx*0.006;
+    cam.tPhi = clamp(cam.tPhi - dy*0.006, PHI_MIN, PHI_MAX);
+  });
+  world.addEventListener('pointerup', function(e){
+    if(!ptr.down) return;
+    ptr.down = false; world.classList.remove('dragging');
+    if(ptr.moved < 7){ // treat as click
+      var hit = pickAt(e.clientX, e.clientY);
+      if(hit){ if(hit.type === 'orb') collectOrb(hit.idx); else openZone(hit.id); dismissHint(); }
+    }
+  });
+  world.addEventListener('pointerleave', function(){ ptr.down = false; world.classList.remove('dragging'); });
+
+  world.addEventListener('wheel', function(e){
+    if(!S.started) return;
+    e.preventDefault();
+    cam.tRadius = clamp(cam.tRadius + (e.deltaY > 0 ? 1.4 : -1.4), R_MIN, R_MAX); S.idle = 0;
+  }, { passive: false });
+
+  // touch pinch zoom
+  world.addEventListener('touchmove', function(e){
+    if(e.touches.length === 2){
+      var dx = e.touches[0].clientX - e.touches[1].clientX, dy = e.touches[0].clientY - e.touches[1].clientY;
+      var d = Math.sqrt(dx*dx + dy*dy);
+      if(pinch.active){ cam.tRadius = clamp(cam.tRadius - (d - pinch.dist)*0.03, R_MIN, R_MAX); }
+      pinch.active = true; pinch.dist = d; S.idle = 0; e.preventDefault();
+    }
+  }, { passive: false });
+  world.addEventListener('touchend', function(e){ if(e.touches.length < 2) pinch.active = false; });
+
+  // hover highlight (desktop)
+  world.addEventListener('pointermove', function(e){
+    if(!S.started || ptr.down || e.pointerType === 'touch') return;
+    var hit = pickAt(e.clientX, e.clientY);
+    for(var id in islands) islands[id].label.classList.remove('hot');
+    world.style.cursor = '';
+    if(hit && hit.type === 'zone'){ islands[hit.id].label.classList.add('hot'); world.style.cursor = 'pointer'; }
+    else if(hit && hit.type === 'orb'){ world.style.cursor = 'pointer'; }
+  });
+}
+
+/* ==================== ZONE PANEL ==================== */
+var panel = $('#panel');
+function openZone(id){
+  var z = ZONES[id];
+  $('#pIcon').innerHTML = ICONS[id];
+  $('#pSub').textContent = z.sub;
+  $('#pName').textContent = z.name;
+  $('#pTag').textContent = z.tag;
+  $('#pBody').innerHTML = typeof z.body === 'function' ? z.body() : (z.body || '');
+  panel.style.setProperty('--zc', z.color);
+  panel.classList.add('open');
+  sfx.open();
+
+  // next-zone button
+  var ix = ALL.indexOf(id), nx = ALL[(ix + 1) % ALL.length];
+  var nb = $('#pNext');
+  nb.textContent = 'NEXT → ' + ZONES[nx].name;
+  nb.onclick = function(){ openZone(nx); };
+
+  // animate Nexus stat bars
+  var fills = $('#pBody').querySelectorAll('.sfill');
+  if(fills.length){ requestAnimationFrame(function(){
+    for(var i=0;i<fills.length;i++){ fills[i].style.width = (fills[i].getAttribute('data-w')||0) + '%'; }
+  }); }
+
+  // dock active state
+  var dbs = $('#dock').children;
+  for(var d=0; d<dbs.length; d++) dbs[d].classList.toggle('active', dbs[d].getAttribute('data-id') === id);
+
+  // first-visit bookkeeping
+  if(!S.visited[id]){
+    S.visited[id] = true; S.nVisited++;
+    islands[id].label.classList.add('visited');
+    var btn = $('#dock').querySelector('[data-id="'+id+'"]'); if(btn) btn.classList.add('visited');
+    addXP(20, 'ZONE DISCOVERED');
+    if(S.nVisited === 1) unlock('first');
+    if(id === 'nexus') unlock('soul');
+    var allIslands = ORDER.every(function(z2){ return S.visited[z2]; });
+    if(allIslands) unlock('carto');
+    checkFull(); updateHUD(); drawRadar();
+  }
+}
+function closePanel(){ if(panel.classList.contains('open')){ panel.classList.remove('open'); sfx.close(); } }
+
+/* ==================== DOCK ==================== */
+function buildDock(){
+  var dock = $('#dock');
+  ALL.forEach(function(id){
+    var z = ZONES[id];
+    var b = document.createElement('button');
+    b.className = 'dbtn'; b.setAttribute('data-id', id); b.style.setProperty('--zc', z.color);
+    b.innerHTML = ICONS[id] + '<span>' + z.dock + '</span><i class="dot"></i>';
+    b.addEventListener('click', function(){ if(S.started){ openZone(id); dismissHint(); } });
+    dock.appendChild(b);
+  });
+}
+
+/* ==================== RADAR ==================== */
+function drawRadar(){
+  var cv = $('#radar'); if(!cv) return;
+  var g = cv.getContext('2d'), W = cv.width, H = cv.height, cx = W/2, cy = H/2, R = W*0.42;
+  g.clearRect(0, 0, W, H);
+  // rings
+  g.strokeStyle = 'rgba(148,166,255,.18)'; g.lineWidth = 1.5;
+  [0.4, 0.7, 1].forEach(function(f){ g.beginPath(); g.arc(cx, cy, R*f, 0, TAU); g.stroke(); });
+  g.beginPath(); g.moveTo(cx-R, cy); g.lineTo(cx+R, cy); g.moveTo(cx, cy-R); g.lineTo(cx, cy+R); g.stroke();
+  var world2r = R/13;
+  // camera heading sweep
+  g.save(); g.strokeStyle = 'rgba(34,211,238,.55)'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(cx, cy);
+  g.lineTo(cx + Math.sin(cam.theta)*R, cy + Math.cos(cam.theta)*R); g.stroke(); g.restore();
+  // orbs
+  orbs.forEach(function(o){
+    if(!o.alive) return;
+    g.fillStyle = '#9fe8ff';
+    g.beginPath(); g.arc(cx + o.base.x*world2r, cy + o.base.z*world2r, 2.4, 0, TAU); g.fill();
+  });
+  // islands
+  for(var id in islands){
+    var p = islands[id].group.position, vis = !!S.visited[id], z = ZONES[id];
+    g.fillStyle = z.color; g.globalAlpha = vis ? 1 : 0.45;
+    g.beginPath(); g.arc(cx + p.x*world2r, cy + p.z*world2r, id === 'nexus' ? 5 : 3.6, 0, TAU); g.fill();
+    if(vis){ g.globalAlpha = 1; g.strokeStyle = '#34d399'; g.lineWidth = 1.4; g.stroke(); }
+    g.globalAlpha = 1;
+  }
+}
+
+/* ==================== RENDER LOOP ==================== */
+var projV = null;
+function project(obj, yOff){
+  projV = projV || new THREE.Vector3();
+  projV.set(0, yOff || 0, 0).applyMatrix4(obj.matrixWorld);
+  projV.project(camera);
+  return projV;
+}
+function tick(){
+  requestAnimationFrame(tick);
+  if(!renderer) return;
+  clock += 0.016;
+  S.idle += 0.016;
+
+  // island bob + crystal spin
+  for(var id in islands){
+    var is = islands[id];
+    is.group.position.y = is.baseY + Math.sin(clock*0.6 + is.phase)*0.35;
+    if(is.crystal){ is.crystal.rotation.y += 0.01; is.crystal.rotation.x += 0.004; }
+  }
+  // orb float + pulse
+  for(var i=0;i<orbs.length;i++){
+    var o = orbs[i]; if(!o.alive) continue;
+    var y = o.base.y + Math.sin(clock*1.3 + o.phase)*0.4;
+    o.mesh.position.y = y;
+    var pl = 1 + Math.sin(clock*3 + o.phase)*0.12; o.mesh.scale.setScalar(pl);
+    if(o.glow){ o.glow.position.copy(o.mesh.position); o.glow.material.opacity = 0.6 + Math.sin(clock*3 + o.phase)*0.25; }
+  }
+  if(stars) stars.rotation.y += RM ? 0 : 0.0003;
+
+  // gentle auto-rotate when idle and panel closed
+  if(!RM && S.started && S.idle > 4 && !ptr.down) cam.tTheta += 0.0016;
+
+  // ease camera toward targets
+  cam.theta += (cam.tTheta - cam.theta)*0.1;
+  cam.phi += (cam.tPhi - cam.phi)*0.1;
+  cam.radius += (cam.tRadius - cam.radius)*0.1;
+  camera.position.set(
+    center.x + cam.radius*Math.sin(cam.phi)*Math.sin(cam.theta),
+    center.y + cam.radius*Math.cos(cam.phi),
+    center.z + cam.radius*Math.sin(cam.phi)*Math.cos(cam.theta)
+  );
+  camera.lookAt(center);
+
+  renderer.render(scene, camera);
+
+  // position HTML labels
+  if(S.started){
+    for(var lid in islands){
+      var isl = islands[lid], v = project(isl.group, 2.6 + isl.group.position.y - isl.baseY);
+      if(v.z > 1){ isl.label.style.opacity = 0; continue; }
+      var sx = (v.x*0.5 + 0.5)*window.innerWidth, sy = (-v.y*0.5 + 0.5)*window.innerHeight;
+      isl.label.style.transform = 'translate(-50%,-100%)';
+      isl.label.style.left = sx + 'px'; isl.label.style.top = sy + 'px';
+      isl.label.style.opacity = 1;
+    }
+  }
+  drawRadar();
+}
+
+/* ==================== HINT / PLAYTIME / KONAMI ==================== */
+var hintTimer = null;
+function dismissHint(){ var h = $('#hint'); if(h) h.classList.add('off'); if(hintTimer){ clearTimeout(hintTimer); hintTimer = null; } }
+var KONAMI = [38,38,40,40,37,39,37,39,66,65], kpos = 0;
+function onKey(e){
+  if(e.key === 'Escape'){ if(S.modal) closeModal(); else closePanel(); return; }
+  var k = e.keyCode || e.which;
+  if(k === KONAMI[kpos]){ kpos++; if(kpos === KONAMI.length){ kpos = 0; if(!S.ach.konami){ unlock('konami'); confetti(40); } } }
+  else { kpos = (k === KONAMI[0]) ? 1 : 0; }
+}
+
+/* ==================== START / BOOT ==================== */
+function startGame(){
+  if(S.started) return;
+  audio(); sfx.start();
+  S.started = true;
+  $('#title').classList.add('off');
+  $('#hud').classList.add('on');
+  $('#labels').style.visibility = 'visible';
+  unlock('boot');
+  setInterval(function(){ if(S.started && !S.full) S.playSec++; }, 1000);
+  hintTimer = setTimeout(dismissHint, 6000);
+  updateHUD();
+}
+function runLoader(){
+  var fill = $('#tFill'), pctEl = $('#tPct'), btn = $('#startBtn'), p = 0;
+  var iv = setInterval(function(){
+    p = Math.min(100, p + 4 + Math.random()*7);
+    fill.style.width = p + '%'; pctEl.textContent = Math.round(p) + '%';
+    if(p >= 100){ clearInterval(iv); setTimeout(function(){ $('#tLoad').style.opacity = '.4'; btn.style.display = 'block'; }, 250); }
+  }, 70);
+}
+function bindUI(){
+  $('#startBtn').addEventListener('click', startGame);
+  $('#btnQuests').addEventListener('click', openQuests);
+  $('#btnAch').addEventListener('click', openAch);
+  $('#btnHelp').addEventListener('click', openHelp);
+  $('#btnSound').addEventListener('click', function(){
+    S.sound = !S.sound;
+    $('#sndOn').style.display = S.sound ? '' : 'none';
+    $('#sndOff').style.display = S.sound ? 'none' : '';
+    if(S.sound){ audio(); sfx.click(); }
+  });
+  $('#pClose').addEventListener('click', closePanel);
+  $('#mClose').addEventListener('click', closeModal);
+  $('#mback').addEventListener('click', function(e){ if(e.target === mback) closeModal(); });
+  document.addEventListener('keydown', onKey);
+}
+
+function init(){
+  if(!webglOK()){ var n = $('#no3d'); if(n) n.style.display = 'grid'; return; }
+  buildWorld();
+  buildDock();
+  bindInput();
+  bindUI();
+  updateHUD();
+  runLoader();
+  tick();
+}
+
+if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+else init();
+
+})();
