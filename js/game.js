@@ -363,6 +363,8 @@ function openComplete(){
 /* ==================== CHUNK 4 — THREE.JS WORLD ==================== */
 var THREE = window.THREE;
 var renderer, scene, camera, raycaster, ndc;
+var composer = null, bloomPass = null;
+var LOW = (window.innerWidth < 740) || ((window.devicePixelRatio || 1) < 1);
 var islands = {};        // zone id -> { group, label, dockBtn, baseY, phase, spin, crystal, light }
 var islandPicks = [];    // meshes/groups carrying userData.zone (raycast targets)
 var orbs = [];           // { mesh, glow, base, alive, phase }
@@ -511,6 +513,18 @@ function buildWorld(){
     makeOrb(new THREE.Vector3(Math.cos(ang)*rr, 1.4 + Math.sin(o*2.1)*1.6, Math.sin(ang)*rr), o);
   }
 
+  // post-processing: UnrealBloom
+  composer = new THREE.EffectComposer(renderer);
+  composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  composer.addPass(new THREE.RenderPass(scene, camera));
+  bloomPass = new THREE.UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    LOW ? 0.6 : 0.95,   // strength
+    0.55,               // radius
+    0.2                 // threshold
+  );
+  composer.addPass(bloomPass);
+
   window.addEventListener('resize', onResize);
   onResize();
 }
@@ -520,6 +534,10 @@ function onResize(){
   camera.aspect = window.innerWidth/window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if(composer){
+    composer.setSize(window.innerWidth, window.innerHeight);
+    if(bloomPass) bloomPass.setSize(window.innerWidth, window.innerHeight);
+  }
 }
 
 /* ==================== CHUNK 5 — INPUT + RAYCAST + LOOP ==================== */
@@ -737,7 +755,7 @@ function tick(){
   );
   camera.lookAt(center);
 
-  renderer.render(scene, camera);
+  if(composer) composer.render(); else renderer.render(scene, camera);
 
   // position HTML labels
   if(S.started){
